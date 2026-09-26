@@ -1,0 +1,55 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Elagoht/collage-snippets-highlighter/main/schemas/collage-plugin-manifest.schema.json",
+  "name": "elagoht/session",
+  "description": "A collage plugin for a session kept in a cookie: a small map of strings the site signs, and can encrypt, with no database behind it.",
+  "repository": "https://github.com/Elagoht/collage-session",
+  "config": {
+    "type": "object",
+    "description": "A collage plugin for a session kept in a cookie: a small map of strings the site signs, and can encrypt, with no database behind it.",
+    "properties": {
+      "cookie": {
+        "type": "string",
+        "description": "Cookie is the cookie's name. Default \"collage_session\"."
+      },
+      "domain": {
+        "type": "string",
+        "description": "Domain is the cookie's domain. Default none: the host that set it."
+      },
+      "encrypt": {
+        "type": "boolean",
+        "description": "Encrypt encrypts the session with AES-GCM, so the reader cannot read what it holds. Without it the session is only signed: the reader can read it, and cannot change it."
+      },
+      "idleTimeout": {
+        "type": "integer",
+        "description": "IdleTimeout is how many seconds without a request end a session. Default 0, no idle limit. With one, the cookie is rewritten as the reader keeps coming back, at most every quarter of the timeout."
+      },
+      "key": {
+        "type": "string",
+        "description": "KeyHex is Key, hex-encoded, as configuration carries it."
+      },
+      "maxAge": {
+        "type": "integer",
+        "description": "MaxAge is how many seconds a session lives from when it was started or regenerated, however active its reader. Default 604800, a week."
+      },
+      "path": {
+        "type": "string",
+        "description": "Path is the cookie's path. Default \"/\"."
+      },
+      "previousKeys": {
+        "type": "array",
+        "description": "PreviousKeysHex is PreviousKeys, hex-encoded, as configuration carries them.",
+        "items": {
+          "type": "string"
+        }
+      },
+      "sameSite": {
+        "type": "string",
+        "description": "SameSite is \"lax\" (the default), \"strict\" or \"none\". \"none\" needs Secure."
+      },
+      "secure": {
+        "type": "boolean",
+        "description": "Secure sends the cookie over HTTPS only, always. Without it the cookie is Secure when the request arrived over TLS, or through a proxy that says so with X-Forwarded-Proto: https."
+      }
+    }
+  }
+}
