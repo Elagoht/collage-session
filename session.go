@@ -14,13 +14,14 @@
 //		}
 //		s := session.Get(rc)
 //		s.Regenerate() // a new id for a new privilege
-//		if err := s.Set("user", user.ID); err != nil {
+//		if err := s.Set(session.UserKey, user.ID); err != nil {
 //			return nil, err
 //		}
 //		return collage.SeeOther("/account"), nil
 //	}
 //
-// and a data handler reads it with session.Get(rc).Get("user").
+// and a data handler reads it with session.Get(rc).Get(session.UserKey). A layout
+// carrying session.RequireUser keeps signed-out readers off every page it wraps.
 //
 // A page rendered for a reader with a session may show that reader's data, so a
 // request carrying a valid session cookie is answered with a fresh render that is
@@ -130,7 +131,7 @@ var _ collage.Plugin = (*Plugin)(nil)
 func New(opts Options) *Plugin { return &Plugin{opts: opts} }
 
 func (p *Plugin) Name() string                   { return Name }
-func (p *Plugin) Version() string                { return "0.1.1" }
+func (p *Plugin) Version() string                { return "0.2.0" }
 func (p *Plugin) Shutdown(context.Context) error { return nil }
 
 // Init reads the configuration, refuses what is wrong with it, and wraps every

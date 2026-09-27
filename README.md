@@ -26,7 +26,7 @@ func login(ctx context.Context, rc *collage.RenderContext) (*collage.ActionResul
 	}
 	s := session.Get(rc)
 	s.Regenerate()
-	if err := s.Set("user", user.ID); err != nil {
+	if err := s.Set(session.UserKey, user.ID); err != nil {
 		return nil, err
 	}
 	return collage.SeeOther("/account"), nil
@@ -36,7 +36,7 @@ func login(ctx context.Context, rc *collage.RenderContext) (*collage.ActionResul
 A data handler reads it, and signing out is `Clear`:
 
 ```go
-userID := session.Get(rc).Get("user")
+userID := session.Get(rc).Get(session.UserKey)
 ```
 
 | Method | |
@@ -55,6 +55,39 @@ The session is safe to use from a page's data handlers, which run at the same ti
 
 Values are strings, which keeps the cookie small and its encoding obvious: store an
 id and look the rest up, rather than the record itself.
+
+## Private pages
+
+`RequireUser` is a [guard](https://collage.furkanbaytekin.dev/en/docs/pages-and-layouts/#private-pages-guards)
+(collage v0.28.0 and later): put it on a layout, and every page in that layout
+is for signed-in readers only — its renders and the forms on its own URL alike.
+
+```go
+func Private() *collage.Fragment {
+	return collage.NewFragment("private", "layouts/private.html").
+		WithGuard(session.RequireUser("/login")).
+		Build()
+}
+
+page := collage.NewPage("dashboard").
+	WithLayouts(layouts.Master(), layouts.Private()).
+	WithContent(dashboard).
+	WithPath("en", "/dashboard").
+	Build()
+```
+
+A reader is signed in when the session holds a value under `session.UserKey`
+(`"user"`), which the login action above sets. Anyone else gets `303 See Other` to
+the login path with where they were going in `next`: `/login?next=%2Fdashboard`. A
+login path with a query of its own keeps it (`/login?lang=tr&next=…`). The login
+action reads `next` to send the reader back — check that it is a path on your own
+site before redirecting to it.
+
+`session.Require(key, loginPath)` is the same for any key — `Require("admin",
+"/login")` for a section only some signed-in readers may see. Both need the plugin
+in the application: without it there is no session to read, and the guard fails the
+request with `ErrNoSession` rather than sending every reader to a login that could
+never let them in.
 
 ## The cache
 
