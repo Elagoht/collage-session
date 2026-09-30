@@ -50,6 +50,7 @@
         "type": "boolean",
         "description": "Secure sends the cookie over HTTPS only, always. Without it the cookie is Secure when the request arrived over TLS, or through a proxy that says so with X-Forwarded-Proto: https."
       }
-    }
+    },
+    "additionalProperties": false
   }
 }
