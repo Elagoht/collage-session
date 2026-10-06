@@ -55,11 +55,11 @@ func newSite(t *testing.T, opts session.Options, pluginConfig string) *site {
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := collage.NewFragment("p", "p.html").WithDataHandler(
-		func(_ context.Context, rc *collage.RenderContext) (any, []string, error) { // any: collage's data handler signature
+	content := collage.NewFragment("p", "p.html").WithData(collage.Load(
+		func(_ context.Context, rc *collage.RenderContext) (string, error) {
 			s.renders.Add(1)
-			return session.Get(rc).Get("user"), nil, nil
-		}).Build()
+			return session.Get(rc).Get("user"), nil
+		})).Build()
 	// Static, so it is cached: a signed-in reader's page must never be the cached one.
 	if err := app.RegisterPage(collage.NewPage("account").WithContent(content).WithPath("en", "/account").Static().Build()); err != nil {
 		t.Fatal(err)
