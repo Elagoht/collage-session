@@ -11,7 +11,7 @@ app, err := collage.New(&collage.Config{
 })
 ```
 
-Requires collage v0.23.0 or later. It adds no template function, so it can be
+Requires collage v0.50.0 or later. It adds no template function, so it can be
 registered with `RegisterPlugin` as well as in `Config.Plugins`.
 
 ## Using it

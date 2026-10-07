@@ -131,15 +131,17 @@ var _ collage.Plugin = (*Plugin)(nil)
 func New(opts Options) *Plugin { return &Plugin{opts: opts} }
 
 func (p *Plugin) Name() string                   { return Name }
-func (p *Plugin) Version() string                { return "0.2.2" }
+func (p *Plugin) Version() string                { return "0.2.3" }
 func (p *Plugin) Shutdown(context.Context) error { return nil }
 
 // Init reads the configuration, refuses what is wrong with it, and wraps every
 // request to load its session and write it back.
 func (p *Plugin) Init(_ context.Context, host collage.Host) error {
-	if err := host.Config(&p.opts); err != nil {
+	opts, err := collage.PluginConfig(host, p.opts)
+	if err != nil {
 		return err
 	}
+	p.opts = opts
 	p.log = host.Logger()
 	if err := p.configure(host.DevMode()); err != nil {
 		return err
