@@ -394,6 +394,7 @@ func TestMisconfiguration(t *testing.T) {
 		"unset key env":      {opts: session.Options{KeyEnv: "SESSION_TEST_UNSET"}},
 		"short previous key": {opts: session.Options{Key: keyA, PreviousKeys: [][]byte{[]byte("short")}}},
 		"bad previous hex":   {opts: session.Options{Key: keyA, PreviousKeysEnv: "SESSION_TEST_BAD_HEX"}},
+		"unset previous env": {opts: session.Options{Key: keyA, PreviousKeysEnv: "SESSION_TEST_UNSET"}},
 		"sameSite none":      {opts: session.Options{Key: keyA, SameSite: "none"}},
 		"sameSite typo":      {opts: session.Options{Key: keyA, SameSite: "lux"}},
 		"negative maxAge":    {opts: session.Options{Key: keyA, MaxAge: collage.Duration(-time.Second)}},
@@ -407,6 +408,11 @@ func TestMisconfiguration(t *testing.T) {
 		if _, err := collagetest.TrySite(t, siteOptions(&site{}, c.opts, c.config)...); err == nil {
 			t.Errorf("%s: the application started", name)
 		}
+	}
+	// A previous-keys variable that is set but empty is no previous keys.
+	t.Setenv("SESSION_TEST_EMPTY", "")
+	if _, err := collagetest.TrySite(t, siteOptions(&site{}, session.Options{Key: keyA, PreviousKeysEnv: "SESSION_TEST_EMPTY"}, "")...); err != nil {
+		t.Errorf("empty previousKeysEnv: %v", err)
 	}
 	// Without a key, one is generated and the application runs.
 	if rec := newSite(t, session.Options{}, "").get("/account"); rec.Code != http.StatusOK {

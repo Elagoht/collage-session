@@ -74,7 +74,7 @@ var (
 // Options configures the plugin.
 type Options struct {
 	// KeyEnv names the environment variable holding the key, hex-encoded. When
-	// set, it wins over Key, and an empty or non-hex variable is an error.
+	// set, it wins over Key, and an unset, empty or non-hex variable is an error.
 	KeyEnv string `json:"keyEnv"`
 	// Key signs the cookie, and encrypts it with Encrypt: at least 32 random
 	// bytes, the same on every instance and across restarts. Unset, one is
@@ -82,8 +82,9 @@ type Options struct {
 	// reaching another instance. Set from Go; configuration names it with KeyEnv.
 	Key []byte `json:"-"`
 	// PreviousKeysEnv names the environment variable holding the previous keys,
-	// hex-encoded and comma-separated. When set, it wins over PreviousKeys, and a
-	// key in it that is not hex is an error; an empty variable is no previous keys.
+	// hex-encoded and comma-separated. When set, it wins over PreviousKeys; a
+	// variable that is not set, or a key in it that is not hex, is an error, and
+	// one set but empty is no previous keys.
 	PreviousKeysEnv string `json:"previousKeysEnv"`
 	// PreviousKeys are keys a cookie is still accepted under, and rewritten under
 	// Key: rotating the key signs nobody out. Drop one once MaxAge has passed.
@@ -101,11 +102,13 @@ type Options struct {
 	Domain string `json:"domain"`
 	// MaxAge is how long a session lives from when it was started or
 	// regenerated, however active its reader: "168h". Default a week. Counted in
-	// whole seconds, as the cookie's Max-Age is, so it is at least "1s".
+	// whole seconds, rounded down, as the cookie's Max-Age is, so it is at least
+	// "1s".
 	MaxAge collage.Duration `json:"maxAge"`
 	// IdleTimeout is how long without a request ends a session: "30m". Default 0,
 	// no idle limit. With one, the cookie is rewritten as the reader keeps coming
-	// back, at most every quarter of the timeout. At least "1s" when set.
+	// back, at most every quarter of the timeout. Whole seconds, rounded down: at
+	// least "1s" when set.
 	IdleTimeout collage.Duration `json:"idleTimeout"`
 	// Secure sends the cookie over HTTPS only, always. Without it the cookie is
 	// Secure when the request arrived over TLS, or through a proxy that says so
@@ -161,7 +164,10 @@ func (p *Plugin) Init(_ context.Context, host collage.Host) error {
 func (p *Plugin) configure(dev bool) error {
 	o := &p.opts
 	if o.KeyEnv != "" {
-		raw := os.Getenv(o.KeyEnv)
+		raw, set := os.LookupEnv(o.KeyEnv)
+		if !set {
+			return fmt.Errorf("session: key: the environment variable %s is not set", o.KeyEnv)
+		}
 		if raw == "" {
 			return fmt.Errorf("session: key: the environment variable %s is empty", o.KeyEnv)
 		}
@@ -172,8 +178,12 @@ func (p *Plugin) configure(dev bool) error {
 		o.Key = key
 	}
 	if o.PreviousKeysEnv != "" {
+		list, set := os.LookupEnv(o.PreviousKeysEnv)
+		if !set {
+			return fmt.Errorf("session: previous keys: the environment variable %s is not set", o.PreviousKeysEnv)
+		}
 		var previous [][]byte
-		for i, h := range strings.Split(os.Getenv(o.PreviousKeysEnv), ",") {
+		for i, h := range strings.Split(list, ",") {
 			if h = strings.TrimSpace(h); h == "" {
 				continue
 			}

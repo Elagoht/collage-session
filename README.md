@@ -196,7 +196,8 @@ session.New(session.Options{
 | `secure` | `false`: when the request is HTTPS | `Secure` on every cookie |
 | `sameSite` | `lax` | `lax`, `strict`, or `none`, which needs `secure` |
 
-A key that is not hex or shorter than 32 bytes, a key variable that is empty, a
+A key that is not hex or shorter than 32 bytes, a key variable that is not set or
+empty, a previous-keys variable that is not set (set but empty means none), a
 duration written as a number, a negative one or one under a second, an unknown
 `sameSite`, `none` without `secure`, and a cookie name a browser would refuse all
 stop the application from starting.
@@ -207,8 +208,9 @@ stop the application from starting.
 | --- | --- |
 | `key` (hex), `Options.KeyHex` | `keyEnv`, the environment variable holding the hex key; `Options.Key []byte` stays for Go |
 | `previousKeys` (hex list), `Options.PreviousKeysHex` | `previousKeysEnv`, the variable holding them comma-separated; `Options.PreviousKeys [][]byte` stays for Go |
-| `maxAge`, `idleTimeout` in seconds (`604800`) | duration strings (`"168h"`, `"30m"`); `Options.MaxAge`/`IdleTimeout` are `collage.Duration` |
+| `maxAge`, `idleTimeout` in seconds (`604800`) | duration strings (`"168h"`, `"30m"`), counted in whole seconds rounded down (so at least `"1s"`); `Options.MaxAge`/`IdleTimeout` are `collage.Duration` |
 | `session.MaxCookieSize` | unexported; the limit is 4096 bytes |
+| guard error `session guard for "…": …` | `session: guard for "…": …` (still wraps `ErrNoSession`) |
 
 A configuration that still has `key` or `previousKeys` stops the application with
 `unknown key "…"`, and a `maxAge` or `idleTimeout` written as a number stops it
