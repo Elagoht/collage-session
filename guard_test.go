@@ -7,30 +7,16 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"testing/fstest"
 
 	session "github.com/Elagoht/collage-session"
 	"github.com/Elagoht/collage/pkg/collage"
+	"github.com/Elagoht/collage/pkg/collagetest"
 )
 
 // guardSite is an app with a login action that signs the reader in, and a private
 // page — wrapped in a layout guarded by guard — with a form of its own.
 func guardSite(t *testing.T, guard collage.GuardFunc, withPlugin bool) http.Handler {
 	t.Helper()
-	cfg := &collage.Config{
-		Server: collage.ServerConfig{Host: "localhost", Port: 3000},
-		Template: collage.TemplateConfig{FS: fstest.MapFS{
-			"t/private.html": {Data: []byte(`<div>{{slot "content"}}</div>`)},
-			"t/panel.html":   {Data: []byte(`panel`)},
-		}, Root: "t"},
-	}
-	if withPlugin {
-		cfg.Plugins = []collage.Plugin{session.New(session.Options{Key: keyA})}
-	}
-	app, err := collage.New(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
 	private := collage.NewFragment("private", "private.html").WithGuard(guard).Build()
 	page := collage.NewPage("panel").
 		WithLayouts(private).
@@ -41,9 +27,6 @@ func guardSite(t *testing.T, guard collage.GuardFunc, withPlugin bool) http.Hand
 				return &collage.ActionResult{Status: http.StatusNoContent}, nil
 			}).Build()).
 		Build()
-	if err := app.RegisterPage(page); err != nil {
-		t.Fatal(err)
-	}
 	login := collage.NewAction("login").WithPath("en", "/login").WithMethods(http.MethodPost).WithoutCSRF().
 		WithHandler(func(_ context.Context, rc *collage.RenderContext) (*collage.ActionResult, error) {
 			s := session.Get(rc)
@@ -53,10 +36,16 @@ func guardSite(t *testing.T, guard collage.GuardFunc, withPlugin bool) http.Hand
 			}
 			return &collage.ActionResult{Status: http.StatusNoContent}, nil
 		}).Build()
-	if err := app.RegisterAction(login); err != nil {
-		t.Fatal(err)
+	var plugins []collage.Plugin
+	if withPlugin {
+		plugins = []collage.Plugin{session.New(session.Options{Key: keyA})}
 	}
-	return app.Handler()
+	return collagetest.NewSite(t,
+		collagetest.WithPlugins(plugins...),
+		collagetest.WithTemplates(map[string]string{"private.html": `<div>{{slot "content"}}</div>`, "panel.html": `panel`}),
+		collagetest.WithoutHome(),
+		collagetest.WithRegister(page, login),
+	).App.Handler()
 }
 
 func signIn(t *testing.T, h http.Handler) []*http.Cookie {
