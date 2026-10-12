@@ -71,7 +71,7 @@ func newSite(t *testing.T, opts session.Options, pluginConfig string) *site {
 				s := session.Get(rc)
 				a := fn(s, rc.Request)
 				a.ID, a.User = s.ID(), s.Get("user")
-				return collage.JSONOf(http.StatusOK, a)
+				return collage.JSON(http.StatusOK, a)
 			}).Build()); err != nil {
 			t.Fatal(err)
 		}
