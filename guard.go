@@ -50,7 +50,7 @@ func Require(key, loginPath string) collage.GuardFunc {
 	return func(ctx context.Context, r *http.Request) (*collage.GuardDecision, error) {
 		s := FromContext(ctx)
 		if s == nil {
-			return nil, fmt.Errorf("session guard for %q: %w", key, ErrNoSession)
+			return nil, fmt.Errorf("session: guard for %q: %w", key, ErrNoSession)
 		}
 		if s.Get(key) != "" {
 			return nil, nil

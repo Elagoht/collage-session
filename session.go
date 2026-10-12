@@ -2,7 +2,7 @@
 // of strings the site signs, and can encrypt, with no database behind it.
 //
 //	app, err := collage.New(&collage.Config{
-//		Plugins: []collage.Plugin{session.New(session.Options{Key: key})},
+//		Plugins: []collage.Plugin{session.New(session.Options{KeyEnv: "SESSION_KEY"})},
 //	})
 //
 // An action signs a reader in:
@@ -43,6 +43,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -53,14 +54,14 @@ import (
 // Name is the plugin's name, and the key its configuration is found under.
 const Name = "elagoht/session"
 
-// MaxCookieSize is the most a session cookie's name and value may take together:
+// maxCookieSize is the most a session cookie's name and value may take together:
 // what every browser keeps of one cookie. Past it a browser drops the cookie
 // without a word, and the reader is signed out for no visible reason.
-const MaxCookieSize = 4096
+const maxCookieSize = 4096
 
 var (
 	// ErrTooLarge is returned by Set when the value would make the cookie larger
-	// than MaxCookieSize. Nothing is changed.
+	// than a browser keeps of one cookie, 4096 bytes. Nothing is changed.
 	ErrTooLarge = errors.New("session: the cookie would be larger than a browser keeps")
 	// ErrNoSession is returned by Set outside a request the plugin wraps: a static
 	// build, a handler the plugin was not registered for.
@@ -72,18 +73,22 @@ var (
 
 // Options configures the plugin.
 type Options struct {
+	// KeyEnv names the environment variable holding the key, hex-encoded. When
+	// set, it wins over Key, and an empty or non-hex variable is an error.
+	KeyEnv string `json:"keyEnv"`
 	// Key signs the cookie, and encrypts it with Encrypt: at least 32 random
 	// bytes, the same on every instance and across restarts. Unset, one is
 	// generated per process, and every reader is signed out by a restart or by
-	// reaching another instance. In configuration it is "key", hex-encoded.
+	// reaching another instance. Set from Go; configuration names it with KeyEnv.
 	Key []byte `json:"-"`
-	// KeyHex is Key, hex-encoded, as configuration carries it.
-	KeyHex string `json:"key"`
+	// PreviousKeysEnv names the environment variable holding the previous keys,
+	// hex-encoded and comma-separated. When set, it wins over PreviousKeys, and a
+	// key in it that is not hex is an error; an empty variable is no previous keys.
+	PreviousKeysEnv string `json:"previousKeysEnv"`
 	// PreviousKeys are keys a cookie is still accepted under, and rewritten under
 	// Key: rotating the key signs nobody out. Drop one once MaxAge has passed.
+	// Set from Go; configuration names them with PreviousKeysEnv.
 	PreviousKeys [][]byte `json:"-"`
-	// PreviousKeysHex is PreviousKeys, hex-encoded, as configuration carries them.
-	PreviousKeysHex []string `json:"previousKeys"`
 	// Encrypt encrypts the session with AES-GCM, so the reader cannot read what it
 	// holds. Without it the session is only signed: the reader can read it, and
 	// cannot change it.
@@ -94,16 +99,18 @@ type Options struct {
 	Path string `json:"path"`
 	// Domain is the cookie's domain. Default none: the host that set it.
 	Domain string `json:"domain"`
-	// MaxAge is how many seconds a session lives from when it was started or
-	// regenerated, however active its reader. Default 604800, a week.
-	MaxAge int `json:"maxAge"`
-	// IdleTimeout is how many seconds without a request end a session. Default 0,
+	// MaxAge is how long a session lives from when it was started or
+	// regenerated, however active its reader: "168h". Default a week. Counted in
+	// whole seconds, as the cookie's Max-Age is, so it is at least "1s".
+	MaxAge collage.Duration `json:"maxAge"`
+	// IdleTimeout is how long without a request ends a session: "30m". Default 0,
 	// no idle limit. With one, the cookie is rewritten as the reader keeps coming
-	// back, at most every quarter of the timeout.
-	IdleTimeout int `json:"idleTimeout"`
+	// back, at most every quarter of the timeout. At least "1s" when set.
+	IdleTimeout collage.Duration `json:"idleTimeout"`
 	// Secure sends the cookie over HTTPS only, always. Without it the cookie is
 	// Secure when the request arrived over TLS, or through a proxy that says so
-	// with X-Forwarded-Proto: https.
+	// with X-Forwarded-Proto: https (collage.IsHTTPS: one listed in
+	// Server.TrustedProxies when any are).
 	Secure bool `json:"secure"`
 	// SameSite is "lax" (the default), "strict" or "none". "none" needs Secure.
 	SameSite string `json:"sameSite"`
@@ -115,6 +122,8 @@ type Plugin struct {
 	log      *slog.Logger
 	keys     []keySet // Key first, then PreviousKeys
 	sameSite http.SameSite
+	// maxAge and idle are MaxAge and IdleTimeout in whole seconds.
+	maxAge, idle int
 }
 
 // keySet is one key and the two keys derived from it, so signing and encrypting
@@ -131,7 +140,7 @@ var _ collage.Plugin = (*Plugin)(nil)
 func New(opts Options) *Plugin { return &Plugin{opts: opts} }
 
 func (p *Plugin) Name() string                   { return Name }
-func (p *Plugin) Version() string                { return "0.2.4" }
+func (p *Plugin) Version() string                { return "0.3.0" }
 func (p *Plugin) Shutdown(context.Context) error { return nil }
 
 // Init reads the configuration, refuses what is wrong with it, and wraps every
@@ -151,19 +160,30 @@ func (p *Plugin) Init(_ context.Context, host collage.Host) error {
 
 func (p *Plugin) configure(dev bool) error {
 	o := &p.opts
-	if o.KeyHex != "" {
-		key, err := hex.DecodeString(o.KeyHex)
+	if o.KeyEnv != "" {
+		raw := os.Getenv(o.KeyEnv)
+		if raw == "" {
+			return fmt.Errorf("session: key: the environment variable %s is empty", o.KeyEnv)
+		}
+		key, err := hex.DecodeString(raw)
 		if err != nil {
-			return fmt.Errorf("session: key: %w", err)
+			return fmt.Errorf("session: key: the environment variable %s is not valid hex", o.KeyEnv)
 		}
 		o.Key = key
 	}
-	for i, h := range o.PreviousKeysHex {
-		key, err := hex.DecodeString(h)
-		if err != nil {
-			return fmt.Errorf("session: previousKeys[%d]: %w", i, err)
+	if o.PreviousKeysEnv != "" {
+		var previous [][]byte
+		for i, h := range strings.Split(os.Getenv(o.PreviousKeysEnv), ",") {
+			if h = strings.TrimSpace(h); h == "" {
+				continue
+			}
+			key, err := hex.DecodeString(h)
+			if err != nil {
+				return fmt.Errorf("session: previous key %d in the environment variable %s is not valid hex", i, o.PreviousKeysEnv)
+			}
+			previous = append(previous, key)
 		}
-		o.PreviousKeys = append(o.PreviousKeys, key)
+		o.PreviousKeys = previous
 	}
 	if len(o.Key) == 0 {
 		o.Key = make([]byte, 32)
@@ -201,10 +221,15 @@ func (p *Plugin) configure(dev bool) error {
 		o.Path = "/"
 	}
 	if o.MaxAge == 0 {
-		o.MaxAge = 7 * 24 * 60 * 60
+		o.MaxAge = collage.Duration(7 * 24 * time.Hour)
 	}
 	if o.MaxAge < 0 || o.IdleTimeout < 0 {
-		return errors.New("session: maxAge and idleTimeout are seconds, and cannot be negative")
+		return errors.New("session: maxAge and idleTimeout cannot be negative")
+	}
+	p.maxAge = int(time.Duration(o.MaxAge) / time.Second)
+	p.idle = int(time.Duration(o.IdleTimeout) / time.Second)
+	if p.maxAge == 0 || (o.IdleTimeout > 0 && p.idle == 0) {
+		return errors.New(`session: maxAge and idleTimeout are counted in whole seconds: at least "1s"`)
 	}
 	switch strings.ToLower(o.SameSite) {
 	case "", "lax":
@@ -311,7 +336,8 @@ func (s *Session) Get(key string) string {
 }
 
 // Set stores value under key, starting the session if there was none. It refuses
-// with ErrTooLarge a value that would take the cookie past MaxCookieSize, and
+// with ErrTooLarge a value that would take the cookie past 4096 bytes, what a
+// browser keeps of one cookie, and
 // changes nothing then.
 func (s *Session) Set(key, value string) error {
 	if s == nil {
@@ -335,8 +361,8 @@ func (s *Session) Set(key, value string) error {
 	// The size is known only once the value is encoded — encrypted, signed — so
 	// encode it, and refuse here, where the caller can still do something about it.
 	next.Seen = time.Now().Unix()
-	if size := len(s.plugin.opts.Cookie) + 1 + len(s.plugin.encode(next)); size > MaxCookieSize {
-		return fmt.Errorf("%w: setting %q would make it %d bytes, over %d", ErrTooLarge, key, size, MaxCookieSize)
+	if size := len(s.plugin.opts.Cookie) + 1 + len(s.plugin.encode(next)); size > maxCookieSize {
+		return fmt.Errorf("%w: setting %q would make it %d bytes, over %d", ErrTooLarge, key, size, maxCookieSize)
 	}
 	s.state = next
 	s.changed = true
@@ -423,10 +449,10 @@ func (p *Plugin) load(r *http.Request) *Session {
 		return s
 	}
 	now := time.Now().Unix()
-	if now-st.Created >= int64(p.opts.MaxAge) {
+	if now-st.Created >= int64(p.maxAge) {
 		return s
 	}
-	if idle := int64(p.opts.IdleTimeout); idle > 0 {
+	if idle := int64(p.idle); idle > 0 {
 		if now-st.Seen >= idle {
 			return s
 		}
@@ -462,7 +488,7 @@ func (w *sessionWriter) commit() {
 	case len(s.state.Data) > 0 && (s.changed || s.stale):
 		s.state.Seen = time.Now().Unix()
 		value := p.encode(s.state)
-		if len(p.opts.Cookie)+1+len(value) > MaxCookieSize {
+		if len(p.opts.Cookie)+1+len(value) > maxCookieSize {
 			// Set refuses what would not fit, so this is only the timestamps'
 			// few bytes; keeping the old cookie is better than one a browser drops.
 			p.log.Error("session: the cookie outgrew what a browser keeps, and was not written", "size", len(value))
@@ -499,9 +525,9 @@ func (w *sessionWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 // remaining is how many seconds the browser should keep the cookie: until the
 // session's lifetime ends, or its idle limit, whichever is sooner.
 func (p *Plugin) remaining(st state) int {
-	left := p.opts.MaxAge - int(time.Now().Unix()-st.Created)
-	if p.opts.IdleTimeout > 0 && p.opts.IdleTimeout < left {
-		left = p.opts.IdleTimeout
+	left := p.maxAge - int(time.Now().Unix()-st.Created)
+	if p.idle > 0 && p.idle < left {
+		left = p.idle
 	}
 	return max(left, 1)
 }
@@ -515,7 +541,7 @@ func (p *Plugin) cookie(r *http.Request, value string, maxAge int) *http.Cookie 
 		MaxAge:   maxAge,
 		HttpOnly: true,
 		SameSite: p.sameSite,
-		Secure:   p.opts.Secure || r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"),
+		Secure:   p.opts.Secure || collage.IsHTTPS(r),
 	}
 }
 

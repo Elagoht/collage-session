@@ -7,11 +7,11 @@ signed in" gets it.
 
 ```go
 app, err := collage.New(&collage.Config{
-	Plugins: []collage.Plugin{session.New(session.Options{Key: key})},
+	Plugins: []collage.Plugin{session.New(session.Options{KeyEnv: "SESSION_KEY"})},
 })
 ```
 
-Requires collage v0.60.0 or later. It adds no template function, so it can be
+Requires collage v0.61.0 or later. It adds no template function, so it can be
 registered with `RegisterPlugin` as well as in `Config.Plugins`.
 
 ## Using it
@@ -114,8 +114,9 @@ Two things follow:
 ## The cookie
 
 `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` when the request arrived over
-TLS or through a proxy that says so with `X-Forwarded-Proto: https` — always, with
-`Secure`. The response carries `Set-Cookie` **only when the session changed**: a
+TLS or through a proxy that says so with `X-Forwarded-Proto: https` — believed only
+from a proxy listed in `Server.TrustedProxies` when any are (`collage.IsHTTPS`) —
+and always, with `Secure`. The response carries `Set-Cookie` **only when the session changed**: a
 reader who is only reading costs no header. The exceptions are a session under an
 idle limit, rewritten at most every quarter of `IdleTimeout` to push the limit back,
 and one signed with a previous key, rewritten under the current one.
@@ -126,11 +127,11 @@ signature, so a value cannot be moved from one cookie to another.
 
 A browser keeps four kilobytes of a cookie and silently drops one past that — the
 reader is signed out for no visible reason. `Set` refuses a value that would take
-the cookie past `session.MaxCookieSize` with an error wrapping `session.ErrTooLarge`
+the cookie past 4096 bytes with an error wrapping `session.ErrTooLarge`
 that names the key and the size, and changes nothing.
 
-A session ends `MaxAge` seconds after it started or was regenerated, and
-`IdleTimeout` seconds after its last request when that is set. Both times are
+A session ends `MaxAge` after it started or was regenerated, and `IdleTimeout`
+after its last request when that is set. Both times are
 inside the signature, so a reader cannot extend them.
 
 ## Forgery
@@ -142,13 +143,18 @@ checked. `SameSite=Lax` is a second line, not the first.
 ## The key
 
 Set a key of at least 32 random bytes, the same on every instance and across
-restarts — `openssl rand -hex 32` makes one. Without one, a key is generated per
+restarts — `openssl rand -hex 32` makes one. A secret never goes in
+`plugins-config.json`: `keyEnv` names the environment variable holding it,
+hex-encoded, or `Options.Key` takes the bytes from Go; `keyEnv` wins when both are
+set. Without one, a key is generated per
 process and a warning logged: every reader is signed out by a restart, or by
 reaching another instance.
 
-To rotate it, make the new key `key` and put the old one in `previousKeys`. A
-cookie under the old key is still accepted and rewritten under the new one, so
-nobody is signed out; drop the old key once `maxAge` has passed.
+To rotate it, put the new key where the key was and the old one among the
+previous keys: the variable `previousKeysEnv` names holds them hex-encoded and
+comma-separated, or `Options.PreviousKeys` takes them from Go. A cookie under the
+old key is still accepted and rewritten under the new one, so nobody is signed
+out; drop the old key once `maxAge` has passed.
 
 ## Configuration
 
@@ -156,22 +162,22 @@ nobody is signed out; drop the old key once `maxAge` has passed.
 session.New(session.Options{
 	Key:         key,
 	Encrypt:     true,
-	MaxAge:      30 * 24 * 60 * 60,
-	IdleTimeout: 2 * 60 * 60,
+	MaxAge:      collage.Duration(30 * 24 * time.Hour),
+	IdleTimeout: collage.Duration(2 * time.Hour),
 })
 ```
 
 ```json
 {
   "elagoht/session": {
-    "key": "hex-encoded, 32 bytes or more",
-    "previousKeys": ["the key before it, hex-encoded"],
+    "keyEnv": "SESSION_KEY",
+    "previousKeysEnv": "SESSION_PREVIOUS_KEYS",
     "encrypt": true,
     "cookie": "collage_session",
     "path": "/",
     "domain": "",
-    "maxAge": 604800,
-    "idleTimeout": 0,
+    "maxAge": "168h",
+    "idleTimeout": "0s",
     "secure": false,
     "sameSite": "lax"
   }
@@ -180,19 +186,34 @@ session.New(session.Options{
 
 | Option | Default | |
 | --- | --- | --- |
-| `key` | generated per process | Signs, and with `encrypt` encrypts, the cookie |
-| `previousKeys` | none | Keys still accepted, and rewritten under `key` |
+| `keyEnv` | none: a key generated per process | The variable holding the key (hex) that signs, and with `encrypt` encrypts, the cookie |
+| `previousKeysEnv` | none | The variable holding keys still accepted, and rewritten under the key (hex, comma-separated) |
 | `encrypt` | `false` | Encrypt with AES-GCM, so the reader cannot read the session |
 | `cookie` | `collage_session` | The cookie's name |
 | `path`, `domain` | `/`, none | The cookie's scope |
-| `maxAge` | `604800`, a week | Seconds a session lives from its start |
-| `idleTimeout` | `0`, none | Seconds without a request that end a session |
+| `maxAge` | `"168h"`, a week | How long a session lives from its start |
+| `idleTimeout` | `"0s"`, none | How long without a request ends a session |
 | `secure` | `false`: when the request is HTTPS | `Secure` on every cookie |
 | `sameSite` | `lax` | `lax`, `strict`, or `none`, which needs `secure` |
 
-A key that is not hex or shorter than 32 bytes, a negative duration, an unknown
+A key that is not hex or shorter than 32 bytes, a key variable that is empty, a
+duration written as a number, a negative one or one under a second, an unknown
 `sameSite`, `none` without `secure`, and a cookie name a browser would refuse all
 stop the application from starting.
+
+## Changed in v0.3.0
+
+| Was | Now |
+| --- | --- |
+| `key` (hex), `Options.KeyHex` | `keyEnv`, the environment variable holding the hex key; `Options.Key []byte` stays for Go |
+| `previousKeys` (hex list), `Options.PreviousKeysHex` | `previousKeysEnv`, the variable holding them comma-separated; `Options.PreviousKeys [][]byte` stays for Go |
+| `maxAge`, `idleTimeout` in seconds (`604800`) | duration strings (`"168h"`, `"30m"`); `Options.MaxAge`/`IdleTimeout` are `collage.Duration` |
+| `session.MaxCookieSize` | unexported; the limit is 4096 bytes |
+
+A configuration that still has `key` or `previousKeys` stops the application with
+`unknown key "…"`, and a `maxAge` or `idleTimeout` written as a number stops it
+naming the key. The cookie's automatic `Secure` flag now believes
+`X-Forwarded-Proto` only from `Server.TrustedProxies` when any are listed.
 
 ## Limitations
 

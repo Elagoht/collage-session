@@ -13,11 +13,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	session "github.com/Elagoht/collage-session"
 	"github.com/Elagoht/collage/pkg/collage"
+	"github.com/Elagoht/collage/pkg/collagetest"
 )
 
 var (
@@ -37,44 +37,25 @@ type answer struct {
 	Too   bool   `json:"tooLarge"`
 }
 
-func newSite(t *testing.T, opts session.Options, pluginConfig string) *site {
-	t.Helper()
-	s := &site{}
-	cfg := &collage.Config{
-		Server: collage.ServerConfig{Host: "localhost", Port: 3000},
-		Template: collage.TemplateConfig{FS: fstest.MapFS{
-			"t/p.html": {Data: []byte(`<main>{{with .}}signed in as {{.}}{{else}}anonymous{{end}}</main>`)},
-		}, Root: "t"},
-		Cache:   collage.CacheConfig{Enabled: true, Type: "memory", DefaultTTL: time.Hour},
-		Plugins: []collage.Plugin{session.New(opts)},
-	}
-	if pluginConfig != "" {
-		cfg.PluginConfig = map[string]json.RawMessage{session.Name: []byte(pluginConfig)}
-	}
-	app, err := collage.New(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+// siteOptions builds the test site: a cached page showing the signed-in user,
+// and the actions the tests drive the session with. s counts the page's renders
+// and is given the handler by newSite.
+func siteOptions(s *site, opts session.Options, pluginConfig string, extra ...collagetest.SiteOption) []collagetest.SiteOption {
 	content := collage.NewFragment("p", "p.html").WithData(collage.Load(
 		func(_ context.Context, rc *collage.RenderContext) (string, error) {
 			s.renders.Add(1)
 			return session.Get(rc).Get("user"), nil
 		})).Build()
 	// Static, so it is cached: a signed-in reader's page must never be the cached one.
-	if err := app.RegisterPage(collage.NewPage("account").WithContent(content).WithPath("en", "/account").Static().Build()); err != nil {
-		t.Fatal(err)
-	}
+	items := []collage.Registrable{collage.NewPage("account").WithContent(content).WithPath("en", "/account").Static().Build()}
 	action := func(name string, fn func(s *session.Session, r *http.Request) answer) {
-		t.Helper()
-		if err := app.RegisterAction(collage.NewAction(name).WithPath("en", "/"+name).WithMethods(http.MethodGet).WithHandler(
+		items = append(items, collage.NewAction(name).WithPath("en", "/"+name).WithMethods(http.MethodGet).WithHandler(
 			func(_ context.Context, rc *collage.RenderContext) (*collage.ActionResult, error) {
 				s := session.Get(rc)
 				a := fn(s, rc.Request)
 				a.ID, a.User = s.ID(), s.Get("user")
 				return collage.JSON(http.StatusOK, a)
-			}).Build()); err != nil {
-			t.Fatal(err)
-		}
+			}).Build())
 	}
 	errAnswer := func(err error) answer {
 		if err == nil {
@@ -106,7 +87,27 @@ func newSite(t *testing.T, opts session.Options, pluginConfig string) *site {
 		wg.Wait()
 		return answer{}
 	})
-	s.h = app.Handler()
+	options := []collagetest.SiteOption{
+		collagetest.WithoutHome(),
+		collagetest.WithTemplates(map[string]string{
+			"p.html": `<main>{{with .}}signed in as {{.}}{{else}}anonymous{{end}}</main>`,
+		}),
+		collagetest.WithRegister(items...),
+		collagetest.WithConfig(func(c *collage.Config) {
+			c.Cache = collage.CacheConfig{Enabled: true, Type: "memory", DefaultTTL: time.Hour}
+		}),
+		collagetest.WithPlugins(session.New(opts)),
+	}
+	if pluginConfig != "" {
+		options = append(options, collagetest.WithPluginConfig(session.Name, pluginConfig))
+	}
+	return append(options, extra...)
+}
+
+func newSite(t *testing.T, opts session.Options, pluginConfig string, extra ...collagetest.SiteOption) *site {
+	t.Helper()
+	s := &site{}
+	s.h = collagetest.NewSite(t, siteOptions(s, opts, pluginConfig, extra...)...).App.Handler()
 	return s
 }
 
@@ -298,8 +299,8 @@ func TestTooLarge(t *testing.T) {
 
 // A session ends MaxAge after it started, and IdleTimeout after its last request.
 func TestExpiry(t *testing.T) {
-	lifetime := newSite(t, session.Options{Key: keyA, MaxAge: 1}, "")
-	idle := newSite(t, session.Options{Key: keyA, IdleTimeout: 1}, "")
+	lifetime := newSite(t, session.Options{Key: keyA, MaxAge: collage.Duration(time.Second)}, "")
+	idle := newSite(t, session.Options{Key: keyA, IdleTimeout: collage.Duration(time.Second)}, "")
 	_, lc := lifetime.ask(t, "/login?user=ada")
 	_, ic := idle.ask(t, "/login?user=ada")
 	if lc.MaxAge != 1 || ic.MaxAge != 1 {
@@ -337,14 +338,40 @@ func TestSecure(t *testing.T) {
 	}
 }
 
-// Configuration carries the key hex-encoded, and overlays the Go options.
+// The cookie's Secure flag believes X-Forwarded-Proto only from a trusted proxy:
+// a client sending it itself, past Server.TrustedProxies, gets no Secure cookie.
+func TestSecureIgnoresAnUntrustedForwardedProto(t *testing.T) {
+	s := newSite(t, session.Options{Key: keyA}, "", collagetest.WithConfig(func(c *collage.Config) {
+		c.Server.TrustedProxies = []string{"10.0.0.1"}
+	}))
+	r := httptest.NewRequest(http.MethodGet, "/login?user=ada", nil) // from 192.0.2.1
+	r.Header.Set("X-Forwarded-Proto", "https")
+	rec := httptest.NewRecorder()
+	s.h.ServeHTTP(rec, r)
+	if c := sessionCookie(rec); c == nil || c.Secure {
+		t.Errorf("cookie %+v: Secure from an untrusted X-Forwarded-Proto", c)
+	}
+	r = httptest.NewRequest(http.MethodGet, "/login?user=ada", nil)
+	r.RemoteAddr = "10.0.0.1:1234"
+	r.Header.Set("X-Forwarded-Proto", "https")
+	rec = httptest.NewRecorder()
+	s.h.ServeHTTP(rec, r)
+	if c := sessionCookie(rec); c == nil || !c.Secure {
+		t.Errorf("cookie %+v: not Secure behind a trusted HTTPS proxy", c)
+	}
+}
+
+// Configuration names the environment variables holding the keys, hex-encoded,
+// and overlays the Go options.
 func TestConfiguration(t *testing.T) {
+	t.Setenv("SESSION_TEST_KEY", hex.EncodeToString(keyB))
+	t.Setenv("SESSION_TEST_PREVIOUS", hex.EncodeToString(keyB)+", "+hex.EncodeToString(keyA))
 	old := newSite(t, session.Options{Key: keyA, Cookie: "sid"}, "")
 	c := cookieNamed(old.get("/login?user=ada"), "sid")
 	if c == nil {
 		t.Fatal("no cookie under the configured name")
 	}
-	cfg := `{"key": "` + hex.EncodeToString(keyB) + `", "previousKeys": ["` + hex.EncodeToString(keyA) + `"], "cookie": "sid", "maxAge": 60}`
+	cfg := `{"keyEnv": "SESSION_TEST_KEY", "previousKeysEnv": "SESSION_TEST_PREVIOUS", "cookie": "sid", "maxAge": "60s"}`
 	s := newSite(t, session.Options{Key: keyA}, cfg)
 	rec := s.get("/whoami", c)
 	var a answer
@@ -357,25 +384,54 @@ func TestConfiguration(t *testing.T) {
 
 // Anything wrong with the configuration stops the application from starting.
 func TestMisconfiguration(t *testing.T) {
-	for name, opts := range map[string]session.Options{
-		"short key":          {Key: []byte("short")},
-		"bad hex":            {KeyHex: "zz"},
-		"short previous key": {Key: keyA, PreviousKeys: [][]byte{[]byte("short")}},
-		"bad previous hex":   {Key: keyA, PreviousKeysHex: []string{"zz"}},
-		"sameSite none":      {Key: keyA, SameSite: "none"},
-		"sameSite typo":      {Key: keyA, SameSite: "lux"},
-		"negative maxAge":    {Key: keyA, MaxAge: -1},
-		"negative idle":      {Key: keyA, IdleTimeout: -5},
-		"bad cookie name":    {Key: keyA, Cookie: "a b"},
+	t.Setenv("SESSION_TEST_BAD_HEX", "zz")
+	for name, c := range map[string]struct {
+		opts   session.Options
+		config string
+	}{
+		"short key":          {opts: session.Options{Key: []byte("short")}},
+		"bad hex":            {opts: session.Options{KeyEnv: "SESSION_TEST_BAD_HEX"}},
+		"unset key env":      {opts: session.Options{KeyEnv: "SESSION_TEST_UNSET"}},
+		"short previous key": {opts: session.Options{Key: keyA, PreviousKeys: [][]byte{[]byte("short")}}},
+		"bad previous hex":   {opts: session.Options{Key: keyA, PreviousKeysEnv: "SESSION_TEST_BAD_HEX"}},
+		"sameSite none":      {opts: session.Options{Key: keyA, SameSite: "none"}},
+		"sameSite typo":      {opts: session.Options{Key: keyA, SameSite: "lux"}},
+		"negative maxAge":    {opts: session.Options{Key: keyA, MaxAge: collage.Duration(-time.Second)}},
+		"negative idle":      {opts: session.Options{Key: keyA, IdleTimeout: collage.Duration(-5 * time.Second)}},
+		"sub-second maxAge":  {opts: session.Options{Key: keyA}, config: `{"maxAge":"500ms"}`},
+		"sub-second idle":    {opts: session.Options{Key: keyA}, config: `{"idleTimeout":"10ms"}`},
+		"maxAge as seconds":  {opts: session.Options{Key: keyA}, config: `{"maxAge":604800}`},
+		"idle as seconds":    {opts: session.Options{Key: keyA}, config: `{"idleTimeout":1800}`},
+		"bad cookie name":    {opts: session.Options{Key: keyA, Cookie: "a b"}},
 	} {
-		rec := newSite(t, opts, "").get("/account")
-		if rec.Code != http.StatusServiceUnavailable {
-			t.Errorf("%s: started, %d", name, rec.Code)
+		if _, err := collagetest.TrySite(t, siteOptions(&site{}, c.opts, c.config)...); err == nil {
+			t.Errorf("%s: the application started", name)
 		}
 	}
 	// Without a key, one is generated and the application runs.
 	if rec := newSite(t, session.Options{}, "").get("/account"); rec.Code != http.StatusOK {
 		t.Errorf("no key: %d", rec.Code)
+	}
+}
+
+// Keys removed in v0.3.0 stop the application: the secrets moved to environment
+// variables named by keyEnv and previousKeysEnv.
+func TestRemovedKeys(t *testing.T) {
+	hexKey := `"` + hex.EncodeToString(keyA) + `"`
+	for k, v := range map[string]string{"key": hexKey, "previousKeys": "[" + hexKey + "]"} {
+		_, err := collagetest.TrySite(t, siteOptions(&site{}, session.Options{}, `{"`+k+`":`+v+`}`)...)
+		if err == nil || !strings.Contains(err.Error(), `unknown key "`+k+`"`) {
+			t.Errorf("%s: start = %v, want an unknown key error", k, err)
+		}
+	}
+}
+
+// KeyEnv wins over a Key set in Go.
+func TestKeyEnvWins(t *testing.T) {
+	t.Setenv("SESSION_TEST_KEY", hex.EncodeToString(keyB))
+	_, c := newSite(t, session.Options{Key: keyA, KeyEnv: "SESSION_TEST_KEY"}, "").ask(t, "/login?user=ada")
+	if a, _ := newSite(t, session.Options{Key: keyB}, "").ask(t, "/whoami", c); a.User != "ada" {
+		t.Error("the cookie is not under the key the environment variable holds")
 	}
 }
 

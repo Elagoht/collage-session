@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -124,8 +125,8 @@ func TestRequireUser_WithoutThePluginFails(t *testing.T) {
 		t.Fatalf("status = %d, want 500", w.Code)
 	}
 	_, err := session.RequireUser("/login")(context.Background(), httptest.NewRequest(http.MethodGet, "/panel", nil))
-	if !errors.Is(err, session.ErrNoSession) {
-		t.Fatalf("guard error = %v, want ErrNoSession", err)
+	if !errors.Is(err, session.ErrNoSession) || !strings.HasPrefix(err.Error(), "session: ") {
+		t.Fatalf("guard error = %v, want ErrNoSession under the session: prefix", err)
 	}
 }
 

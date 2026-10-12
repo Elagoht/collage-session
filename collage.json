@@ -20,27 +20,34 @@
         "description": "Encrypt encrypts the session with AES-GCM, so the reader cannot read what it holds. Without it the session is only signed: the reader can read it, and cannot change it."
       },
       "idleTimeout": {
-        "type": "integer",
-        "description": "IdleTimeout is how many seconds without a request end a session. Default 0, no idle limit. With one, the cookie is rewritten as the reader keeps coming back, at most every quarter of the timeout."
-      },
-      "key": {
         "type": "string",
-        "description": "KeyHex is Key, hex-encoded, as configuration carries it."
+        "description": "IdleTimeout is how long without a request ends a session: \"30m\". Default 0, no idle limit. With one, the cookie is rewritten as the reader keeps coming back, at most every quarter of the timeout. At least \"1s\" when set.",
+        "pattern": "^(\\d+(\\.\\d+)?(ns|us|µs|ms|s|m|h))+$",
+        "examples": [
+          "30s",
+          "5m"
+        ]
+      },
+      "keyEnv": {
+        "type": "string",
+        "description": "KeyEnv names the environment variable holding the key, hex-encoded. When set, it wins over Key, and an empty or non-hex variable is an error."
       },
       "maxAge": {
-        "type": "integer",
-        "description": "MaxAge is how many seconds a session lives from when it was started or regenerated, however active its reader. Default 604800, a week."
+        "type": "string",
+        "description": "MaxAge is how long a session lives from when it was started or regenerated, however active its reader: \"168h\". Default a week. Counted in whole seconds, as the cookie's Max-Age is, so it is at least \"1s\".",
+        "pattern": "^(\\d+(\\.\\d+)?(ns|us|µs|ms|s|m|h))+$",
+        "examples": [
+          "30s",
+          "5m"
+        ]
       },
       "path": {
         "type": "string",
         "description": "Path is the cookie's path. Default \"/\"."
       },
-      "previousKeys": {
-        "type": "array",
-        "description": "PreviousKeysHex is PreviousKeys, hex-encoded, as configuration carries them.",
-        "items": {
-          "type": "string"
-        }
+      "previousKeysEnv": {
+        "type": "string",
+        "description": "PreviousKeysEnv names the environment variable holding the previous keys, hex-encoded and comma-separated. When set, it wins over PreviousKeys, and a key in it that is not hex is an error; an empty variable is no previous keys."
       },
       "sameSite": {
         "type": "string",
@@ -48,7 +55,7 @@
       },
       "secure": {
         "type": "boolean",
-        "description": "Secure sends the cookie over HTTPS only, always. Without it the cookie is Secure when the request arrived over TLS, or through a proxy that says so with X-Forwarded-Proto: https."
+        "description": "Secure sends the cookie over HTTPS only, always. Without it the cookie is Secure when the request arrived over TLS, or through a proxy that says so with X-Forwarded-Proto: https (collage.IsHTTPS: one listed in Server.TrustedProxies when any are)."
       }
     },
     "additionalProperties": false
