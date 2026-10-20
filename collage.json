@@ -3,6 +3,7 @@
   "name": "elagoht/session",
   "description": "A collage plugin for a session kept in a cookie: a small map of strings the site signs, and can encrypt, with no database behind it.",
   "repository": "https://github.com/Elagoht/collage-session",
+  "setup": "In an action: `session.Get(rc).Set(session.UserKey, user.ID)`, then redirect; in a data handler: `session.Get(rc).Get(session.UserKey)`.\nTo keep a layout's pages for signed-in readers: `.WithGuard(session.RequireUser(\"/login\"))` on the layout's fragment.\nSet `\"keyEnv\": \"SESSION_KEY\"` in `plugins-config.json`, and `SESSION_KEY=` (`openssl rand -hex 32`) in `.env.development` and where production runs; without a key a restart signs everyone out.",
   "config": {
     "type": "object",
     "description": "A collage plugin for a session kept in a cookie: a small map of strings the site signs, and can encrypt, with no database behind it.",
