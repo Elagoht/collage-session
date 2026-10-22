@@ -83,8 +83,20 @@ login path with a query of its own keeps it (`/login?lang=tr&next=…`). The log
 action reads `next` to send the reader back — check that it is a path on your own
 site before redirecting to it.
 
+`session.RequireUserPage("login")` names the login page instead of writing its
+path: the reader goes to the page registered as `login`, in the locale the request
+is in — `/tr/giris?next=…` from a Turkish page — so a renamed or translated path
+cannot leave the guard pointing at the old one. A name the application has not
+registered fails the request rather than letting anyone through. It needs collage
+v0.73.0 (`collage.URL`).
+
+```go
+WithGuard(session.RequireUserPage("login"))
+```
+
 `session.Require(key, loginPath)` is the same for any key — `Require("admin",
-"/login")` for a section only some signed-in readers may see. Both need the plugin
+"/login")` for a section only some signed-in readers may see, and
+`session.RequirePage(key, loginPage)` its named form. Both need the plugin
 in the application: without it there is no session to read, and the guard fails the
 request with `ErrNoSession` rather than sending every reader to a login that could
 never let them in.

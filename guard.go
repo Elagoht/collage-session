@@ -43,10 +43,34 @@ func RequireUser(loginPath string) collage.GuardFunc {
 // session to read, and the guard fails the request with ErrNoSession rather than
 // sending every reader to a login that could never let them in.
 func Require(key, loginPath string) collage.GuardFunc {
-	separator := "?"
-	if strings.Contains(loginPath, "?") {
-		separator = "&"
-	}
+	return require(key, func(context.Context) (string, error) { return loginPath, nil })
+}
+
+// RequireUserPage is RequireUser with the login page named rather than its path
+// written: the reader is sent to the page registered as loginPage, in the
+// locale the request is in — /tr/giris from a Turkish page — so a renamed or
+// translated path cannot leave the guard pointing at the old one:
+//
+//	WithGuard(session.RequireUserPage("login"))
+//
+// It is RequirePage(UserKey, loginPage).
+func RequireUserPage(loginPage string) collage.GuardFunc {
+	return RequirePage(UserKey, loginPage)
+}
+
+// RequirePage is Require with the login page named rather than its path
+// written, its path built with collage.URL for each request. A name the
+// application has not registered fails the request, as an unknown name in
+// {{pageURL}} fails the render, rather than letting the reader through.
+func RequirePage(key, loginPage string) collage.GuardFunc {
+	return require(key, func(ctx context.Context) (string, error) {
+		return collage.URL(ctx, loginPage, nil)
+	})
+}
+
+// require is the guard Require and RequirePage return: it lets through a reader
+// whose session holds key, and sends anyone else to login plus "next".
+func require(key string, login func(context.Context) (string, error)) collage.GuardFunc {
 	return func(ctx context.Context, r *http.Request) (*collage.GuardDecision, error) {
 		s := FromContext(ctx)
 		if s == nil {
@@ -55,9 +79,17 @@ func Require(key, loginPath string) collage.GuardFunc {
 		if s.Get(key) != "" {
 			return nil, nil
 		}
+		location, err := login(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("session: guard for %q: %w", key, err)
+		}
+		separator := "?"
+		if strings.Contains(location, "?") {
+			separator = "&"
+		}
 		return &collage.GuardDecision{
 			Status:   http.StatusSeeOther,
-			Location: loginPath + separator + "next=" + url.QueryEscape(r.URL.RequestURI()),
+			Location: location + separator + "next=" + url.QueryEscape(r.URL.RequestURI()),
 		}, nil
 	}
 }

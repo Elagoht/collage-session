@@ -6,6 +6,6 @@
 // does not offer every plugin.
 module github.com/Elagoht/collage-session
 
-go 1.26
+go 1.26.10
 
-require github.com/Elagoht/collage v0.61.4
+require github.com/Elagoht/collage v0.73.0

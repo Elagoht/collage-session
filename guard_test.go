@@ -126,3 +126,51 @@ func TestRequire_AnyKey(t *testing.T) {
 		t.Fatalf("status = %d, want 303", w.Code)
 	}
 }
+
+// pageGuardSite has a login page in English and Turkish, and a private panel in
+// both, guarded by guard.
+func pageGuardSite(t *testing.T, guard collage.GuardFunc) http.Handler {
+	t.Helper()
+	private := collage.NewFragment("private", "private.html").WithGuard(guard).Build()
+	panel := collage.NewPage("panel").
+		WithLayouts(private).
+		WithContent(collage.NewFragment("panel", "panel.html").Build()).
+		WithPath("en", "/panel").WithPath("tr", "/panel").
+		Build()
+	login := collage.NewPage("login").
+		WithContent(collage.NewFragment("login", "panel.html").Build()).
+		WithPath("en", "/login").WithPath("tr", "/giris").
+		Build()
+	return collagetest.NewSite(t,
+		collagetest.WithPlugins(session.New(session.Options{Key: keyA})),
+		collagetest.WithConfig(func(c *collage.Config) {
+			c.Locale = collage.LocaleConfig{Default: "en", Supported: []string{"en", "tr"}}
+		}),
+		collagetest.WithTemplates(map[string]string{"private.html": `<div>{{slot "content"}}</div>`, "panel.html": `panel`}),
+		collagetest.WithoutHome(),
+		collagetest.WithRegister(panel, login),
+	).App.Handler()
+}
+
+// The login page is named, and its path is the one in the request's locale.
+func TestRequireUserPage_RedirectsToTheNamedPage(t *testing.T) {
+	h := pageGuardSite(t, session.RequireUserPage("login"))
+	for path, want := range map[string]string{
+		"/panel?tab=2": "/login?next=%2Fpanel%3Ftab%3D2",
+		"/tr/panel":    "/tr/giris?next=%2Ftr%2Fpanel",
+	} {
+		w := request(h, http.MethodGet, path, nil)
+		if w.Code != http.StatusSeeOther || w.Header().Get("Location") != want {
+			t.Errorf("GET %s = %d to %q, want 303 to %q", path, w.Code, w.Header().Get("Location"), want)
+		}
+	}
+}
+
+// A name nothing is registered under fails the request: nobody is let through,
+// and nobody is sent to a page that does not exist.
+func TestRequirePage_UnknownNameFailsTheRequest(t *testing.T) {
+	h := pageGuardSite(t, session.RequirePage(session.UserKey, "nope"))
+	if w := request(h, http.MethodGet, "/panel", nil); w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", w.Code)
+	}
+}
