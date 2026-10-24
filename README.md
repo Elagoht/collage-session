@@ -7,7 +7,7 @@ signed in" gets it.
 
 ```go
 app, err := collage.New(&collage.Config{
-	Plugins: []collage.Plugin{session.New(session.Options{KeyEnv: "SESSION_KEY"})},
+	Plugins: []collage.Plugin{session.New(session.Options{})},
 })
 ```
 
@@ -155,18 +155,27 @@ checked. `SameSite=Lax` is a second line, not the first.
 ## The key
 
 Set a key of at least 32 random bytes, the same on every instance and across
-restarts — `openssl rand -hex 32` makes one. A secret never goes in
-`plugins-config.json`: `keyEnv` names the environment variable holding it,
-hex-encoded, or `Options.Key` takes the bytes from Go; `keyEnv` wins when both are
-set. Without one, a key is generated per
-process and a warning logged: every reader is signed out by a restart, or by
-reaching another instance.
+restarts — `openssl rand -hex 32` makes one — in the environment variable
+`SESSION_KEY`, hex-encoded:
+
+```sh
+SESSION_KEY=…  # in .env.development, and where production runs
+```
+
+Nothing in `plugins-config.json` is needed for it. A secret never goes there:
+to read another variable, `keyEnv` names it, and `Options.Key` takes the bytes
+from Go. A named `keyEnv` wins over `Options.Key`, which wins over
+`SESSION_KEY`; a named variable that is unset or empty stops the application,
+while `SESSION_KEY` may be. With no key at all, one is generated per process and
+a warning logged: every reader is signed out by a restart, or by reaching
+another instance.
 
 To rotate it, put the new key where the key was and the old one among the
 previous keys: the variable `previousKeysEnv` names holds them hex-encoded and
 comma-separated, or `Options.PreviousKeys` takes them from Go. A cookie under the
 old key is still accepted and rewritten under the new one, so nobody is signed
-out; drop the old key once `maxAge` has passed.
+out; drop the old key once `maxAge` has passed. Without `previousKeysEnv` or
+`Options.PreviousKeys`, they are read from `SESSION_PREVIOUS_KEYS`.
 
 ## Configuration
 
@@ -182,8 +191,8 @@ session.New(session.Options{
 ```json
 {
   "elagoht/session": {
-    "keyEnv": "SESSION_KEY",
-    "previousKeysEnv": "SESSION_PREVIOUS_KEYS",
+    "keyEnv": "",
+    "previousKeysEnv": "",
     "encrypt": true,
     "cookie": "collage_session",
     "path": "/",
@@ -198,8 +207,8 @@ session.New(session.Options{
 
 | Option | Default | |
 | --- | --- | --- |
-| `keyEnv` | none: a key generated per process | The variable holding the key (hex) that signs, and with `encrypt` encrypts, the cookie |
-| `previousKeysEnv` | none | The variable holding keys still accepted, and rewritten under the key (hex, comma-separated) |
+| `keyEnv` | `SESSION_KEY`; with that empty, a key generated per process | The variable holding the key (hex) that signs, and with `encrypt` encrypts, the cookie |
+| `previousKeysEnv` | `SESSION_PREVIOUS_KEYS` | The variable holding keys still accepted, and rewritten under the key (hex, comma-separated) |
 | `encrypt` | `false` | Encrypt with AES-GCM, so the reader cannot read the session |
 | `cookie` | `collage_session` | The cookie's name |
 | `path`, `domain` | `/`, none | The cookie's scope |

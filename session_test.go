@@ -415,6 +415,7 @@ func TestMisconfiguration(t *testing.T) {
 		t.Errorf("empty previousKeysEnv: %v", err)
 	}
 	// Without a key, one is generated and the application runs.
+	t.Setenv(session.DefaultKeyEnv, "")
 	if rec := newSite(t, session.Options{}, "").get("/account"); rec.Code != http.StatusOK {
 		t.Errorf("no key: %d", rec.Code)
 	}
@@ -438,6 +439,34 @@ func TestKeyEnvWins(t *testing.T) {
 	_, c := newSite(t, session.Options{Key: keyA, KeyEnv: "SESSION_TEST_KEY"}, "").ask(t, "/login?user=ada")
 	if a, _ := newSite(t, session.Options{Key: keyB}, "").ask(t, "/whoami", c); a.User != "ada" {
 		t.Error("the cookie is not under the key the environment variable holds")
+	}
+}
+
+// With no keyEnv, previousKeysEnv or keys set in Go, SESSION_KEY and
+// SESSION_PREVIOUS_KEYS hold the keys; bad hex in either stops the application.
+func TestDefaultKeyEnv(t *testing.T) {
+	t.Setenv(session.DefaultKeyEnv, hex.EncodeToString(keyB))
+	t.Setenv(session.DefaultPreviousKeysEnv, hex.EncodeToString(keyA))
+	_, c := newSite(t, session.Options{}, "").ask(t, "/login?user=ada")
+	if a, _ := newSite(t, session.Options{Key: keyB}, "").ask(t, "/whoami", c); a.User != "ada" {
+		t.Error("the cookie is not under SESSION_KEY")
+	}
+	_, old := newSite(t, session.Options{Key: keyA}, "").ask(t, "/login?user=ada")
+	if a, _ := newSite(t, session.Options{}, "").ask(t, "/whoami", old); a.User != "ada" {
+		t.Error("a cookie under SESSION_PREVIOUS_KEYS is refused")
+	}
+	// A key set in Go wins over the variables.
+	if a, _ := newSite(t, session.Options{Key: keyA}, "").ask(t, "/whoami", c); a.User != "" {
+		t.Error("SESSION_KEY won over a Key set in Go")
+	}
+	for _, name := range []string{session.DefaultKeyEnv, session.DefaultPreviousKeysEnv} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(name, "zz")
+			_, err := collagetest.TrySite(t, siteOptions(&site{}, session.Options{}, "")...)
+			if err == nil || !strings.Contains(err.Error(), name) {
+				t.Errorf("bad hex in %s: err = %v", name, err)
+			}
+		})
 	}
 }
 

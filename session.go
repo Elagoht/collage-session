@@ -2,7 +2,7 @@
 // of strings the site signs, and can encrypt, with no database behind it.
 //
 //	app, err := collage.New(&collage.Config{
-//		Plugins: []collage.Plugin{session.New(session.Options{KeyEnv: "SESSION_KEY"})},
+//		Plugins: []collage.Plugin{session.New(session.Options{})},
 //	})
 //
 // An action signs a reader in:
@@ -71,20 +71,31 @@ var (
 	ErrCommitted = errors.New("session: the response has started; the session can no longer change")
 )
 
+// The environment variables the keys are read from when the options name none
+// and set none from Go. Unlike one KeyEnv or PreviousKeysEnv names, they may be
+// unset or empty.
+const (
+	DefaultKeyEnv          = "SESSION_KEY"
+	DefaultPreviousKeysEnv = "SESSION_PREVIOUS_KEYS"
+)
+
 // Options configures the plugin.
 type Options struct {
 	// KeyEnv names the environment variable holding the key, hex-encoded. When
 	// set, it wins over Key, and an unset, empty or non-hex variable is an error.
+	// Unset, with no Key either, the key is read from SESSION_KEY (DefaultKeyEnv).
 	KeyEnv string `json:"keyEnv"`
 	// Key signs the cookie, and encrypts it with Encrypt: at least 32 random
-	// bytes, the same on every instance and across restarts. Unset, one is
-	// generated per process, and every reader is signed out by a restart or by
-	// reaching another instance. Set from Go; configuration names it with KeyEnv.
+	// bytes, the same on every instance and across restarts. Unset, it is read
+	// from SESSION_KEY; with that empty too, one is generated per process, and
+	// every reader is signed out by a restart or by reaching another instance.
+	// Set from Go; configuration names another variable with KeyEnv.
 	Key []byte `json:"-"`
 	// PreviousKeysEnv names the environment variable holding the previous keys,
 	// hex-encoded and comma-separated. When set, it wins over PreviousKeys; a
 	// variable that is not set, or a key in it that is not hex, is an error, and
-	// one set but empty is no previous keys.
+	// one set but empty is no previous keys. Unset, with no PreviousKeys either,
+	// they are read from SESSION_PREVIOUS_KEYS (DefaultPreviousKeysEnv).
 	PreviousKeysEnv string `json:"previousKeysEnv"`
 	// PreviousKeys are keys a cookie is still accepted under, and rewritten under
 	// Key: rotating the key signs nobody out. Drop one once MaxAge has passed.
@@ -143,7 +154,7 @@ var _ collage.Plugin = (*Plugin)(nil)
 func New(opts Options) *Plugin { return &Plugin{opts: opts} }
 
 func (p *Plugin) Name() string                   { return Name }
-func (p *Plugin) Version() string                { return "0.4.0" }
+func (p *Plugin) Version() string                { return "0.5.0" }
 func (p *Plugin) Shutdown(context.Context) error { return nil }
 
 // Init reads the configuration, refuses what is wrong with it, and wraps every
@@ -161,6 +172,23 @@ func (p *Plugin) Init(_ context.Context, host collage.Host) error {
 	return host.Use(p.middleware)
 }
 
+// previousKeys reads list, the comma-separated hex keys the environment
+// variable name holds.
+func previousKeys(name, list string) ([][]byte, error) {
+	var previous [][]byte
+	for i, h := range strings.Split(list, ",") {
+		if h = strings.TrimSpace(h); h == "" {
+			continue
+		}
+		key, err := hex.DecodeString(h)
+		if err != nil {
+			return nil, fmt.Errorf("session: previous key %d in the environment variable %s is not valid hex", i, name)
+		}
+		previous = append(previous, key)
+	}
+	return previous, nil
+}
+
 func (p *Plugin) configure(dev bool) error {
 	o := &p.opts
 	if o.KeyEnv != "" {
@@ -176,22 +204,27 @@ func (p *Plugin) configure(dev bool) error {
 			return fmt.Errorf("session: key: the environment variable %s is not valid hex", o.KeyEnv)
 		}
 		o.Key = key
+	} else if raw := os.Getenv(DefaultKeyEnv); raw != "" && len(o.Key) == 0 {
+		key, err := hex.DecodeString(raw)
+		if err != nil {
+			return fmt.Errorf("session: key: the environment variable %s is not valid hex", DefaultKeyEnv)
+		}
+		o.Key = key
 	}
 	if o.PreviousKeysEnv != "" {
 		list, set := os.LookupEnv(o.PreviousKeysEnv)
 		if !set {
 			return fmt.Errorf("session: previous keys: the environment variable %s is not set", o.PreviousKeysEnv)
 		}
-		var previous [][]byte
-		for i, h := range strings.Split(list, ",") {
-			if h = strings.TrimSpace(h); h == "" {
-				continue
-			}
-			key, err := hex.DecodeString(h)
-			if err != nil {
-				return fmt.Errorf("session: previous key %d in the environment variable %s is not valid hex", i, o.PreviousKeysEnv)
-			}
-			previous = append(previous, key)
+		previous, err := previousKeys(o.PreviousKeysEnv, list)
+		if err != nil {
+			return err
+		}
+		o.PreviousKeys = previous
+	} else if list := os.Getenv(DefaultPreviousKeysEnv); list != "" && len(o.PreviousKeys) == 0 {
+		previous, err := previousKeys(DefaultPreviousKeysEnv, list)
+		if err != nil {
+			return err
 		}
 		o.PreviousKeys = previous
 	}
@@ -200,7 +233,7 @@ func (p *Plugin) configure(dev bool) error {
 		_, _ = rand.Read(o.Key)
 		// A generated key is right for a first run in development and wrong to
 		// deploy, which is what collage says of its own forgery key too.
-		msg := "session: no key set, so one was generated for this process; every reader is signed out by a restart, or by reaching another instance"
+		msg := "session: no key set (" + DefaultKeyEnv + " is empty), so one was generated for this process; every reader is signed out by a restart, or by reaching another instance"
 		if dev {
 			p.log.Info(msg)
 		} else {

@@ -3,7 +3,7 @@
   "name": "elagoht/session",
   "description": "A collage plugin for a session kept in a cookie: a small map of strings the site signs, and can encrypt, with no database behind it.",
   "repository": "https://github.com/Elagoht/collage-session",
-  "setup": "In an action: `session.Get(rc).Set(session.UserKey, user.ID)`, then redirect; in a data handler: `session.Get(rc).Get(session.UserKey)`.\nTo keep a layout's pages for signed-in readers: `.WithGuard(session.RequireUserPage(\"login\"))` on the layout's fragment, naming the login page (or `session.RequireUser(\"/login\")` with its path).\nSet `\"keyEnv\": \"SESSION_KEY\"` in `plugins-config.json`, and `SESSION_KEY=` (`openssl rand -hex 32`) in `.env.development` and where production runs; without a key a restart signs everyone out.",
+  "setup": "In an action: `session.Get(rc).Set(session.UserKey, user.ID)`, then redirect; in a data handler: `session.Get(rc).Get(session.UserKey)`.\nTo keep a layout's pages for signed-in readers: `.WithGuard(session.RequireUserPage(\"login\"))` on the layout's fragment, naming the login page (or `session.RequireUser(\"/login\")` with its path).\nSet `SESSION_KEY=` (`openssl rand -hex 32`) in `.env.development` and where production runs; without a key a restart signs everyone out.",
   "config": {
     "type": "object",
     "description": "A collage plugin for a session kept in a cookie: a small map of strings the site signs, and can encrypt, with no database behind it.",
@@ -31,7 +31,7 @@
       },
       "keyEnv": {
         "type": "string",
-        "description": "KeyEnv names the environment variable holding the key, hex-encoded. When set, it wins over Key, and an unset, empty or non-hex variable is an error."
+        "description": "KeyEnv names the environment variable holding the key, hex-encoded. When set, it wins over Key, and an unset, empty or non-hex variable is an error. Unset, with no Key either, the key is read from SESSION_KEY (DefaultKeyEnv)."
       },
       "maxAge": {
         "type": "string",
@@ -48,7 +48,7 @@
       },
       "previousKeysEnv": {
         "type": "string",
-        "description": "PreviousKeysEnv names the environment variable holding the previous keys, hex-encoded and comma-separated. When set, it wins over PreviousKeys; a variable that is not set, or a key in it that is not hex, is an error, and one set but empty is no previous keys."
+        "description": "PreviousKeysEnv names the environment variable holding the previous keys, hex-encoded and comma-separated. When set, it wins over PreviousKeys; a variable that is not set, or a key in it that is not hex, is an error, and one set but empty is no previous keys. Unset, with no PreviousKeys either, they are read from SESSION_PREVIOUS_KEYS (DefaultPreviousKeysEnv)."
       },
       "sameSite": {
         "type": "string",
