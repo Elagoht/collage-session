@@ -174,3 +174,99 @@ func TestRequirePage_UnknownNameFailsTheRequest(t *testing.T) {
 		t.Fatalf("status = %d, want 500", w.Code)
 	}
 }
+
+// guestSite has a login page in English and Turkish guarded by guard, an
+// account page, and an action that signs the reader in. Without the plugin
+// there is no session.
+func guestSite(t *testing.T, guard collage.GuardFunc, withPlugin bool) http.Handler {
+	t.Helper()
+	auth := collage.NewFragment("auth", "private.html").WithGuard(guard).Build()
+	login := collage.NewPage("login").
+		WithLayouts(auth).
+		WithContent(collage.NewFragment("login", "panel.html").Build()).
+		WithPath("en", "/login").WithPath("tr", "/giris").
+		Build()
+	account := collage.NewPage("account").
+		WithContent(collage.NewFragment("account", "panel.html").Build()).
+		WithPath("en", "/account").WithPath("tr", "/hesap").
+		Build()
+	signin := collage.NewAction("signin").WithPath("en", "/signin").WithMethods(http.MethodPost).WithoutCSRF().
+		WithHandler(func(_ context.Context, rc *collage.RenderContext) (*collage.ActionResult, error) {
+			if err := session.Get(rc).Set(session.UserKey, "ada"); err != nil {
+				return nil, err
+			}
+			return &collage.ActionResult{Status: http.StatusNoContent}, nil
+		}).Build()
+	var plugins []collage.Plugin
+	if withPlugin {
+		plugins = []collage.Plugin{session.New(session.Options{Key: keyA})}
+	}
+	return collagetest.NewSite(t,
+		collagetest.WithPlugins(plugins...),
+		collagetest.WithConfig(func(c *collage.Config) {
+			c.Locale = collage.LocaleConfig{Default: "en", Supported: []string{"en", "tr"}}
+		}),
+		collagetest.WithTemplates(map[string]string{"private.html": `<div>{{slot "content"}}</div>`, "panel.html": `panel`}),
+		collagetest.WithoutHome(),
+		collagetest.WithRegister(login, account, signin),
+	).App.Handler()
+}
+
+func guestSignIn(t *testing.T, h http.Handler) []*http.Cookie {
+	t.Helper()
+	w := request(h, http.MethodPost, "/signin", nil)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("sign in = %d", w.Code)
+	}
+	return w.Result().Cookies()
+}
+
+// A signed-out reader reaches the login page; a signed-in one is sent to a next
+// on this site, or home.
+func TestRequireGuest(t *testing.T) {
+	h := guestSite(t, session.RequireGuest("/account"), true)
+	if w := request(h, http.MethodGet, "/login?next=%2Fpanel", nil); w.Code != http.StatusOK {
+		t.Fatalf("signed out: status = %d, want 200", w.Code)
+	}
+	cookies := guestSignIn(t, h)
+	for target, want := range map[string]string{
+		"/login":                                    "/account",
+		"/login?next=%2Fpanel%3Ftab%3D2":            "/panel?tab=2",
+		"/login?next=%2F%2Fevil.example":            "/account",
+		"/login?next=https%3A%2F%2Fevil.example%2F": "/account",
+		"/login?next=%2F%5Cevil.example":            "/account",
+	} {
+		w := request(h, http.MethodGet, target, cookies)
+		if w.Code != http.StatusSeeOther || w.Header().Get("Location") != want {
+			t.Errorf("signed in, GET %s = %d to %q, want 303 to %q", target, w.Code, w.Header().Get("Location"), want)
+		}
+	}
+}
+
+// The page a signed-in reader is sent to is named, and its path is the one in
+// the request's locale.
+func TestRequireGuestPage(t *testing.T) {
+	h := guestSite(t, session.RequireGuestPage("account"), true)
+	cookies := guestSignIn(t, h)
+	for target, want := range map[string]string{"/login": "/account", "/tr/giris": "/tr/hesap"} {
+		w := request(h, http.MethodGet, target, cookies)
+		if w.Code != http.StatusSeeOther || w.Header().Get("Location") != want {
+			t.Errorf("GET %s = %d to %q, want 303 to %q", target, w.Code, w.Header().Get("Location"), want)
+		}
+	}
+	if w := request(h, http.MethodGet, "/tr/giris", nil); w.Code != http.StatusOK {
+		t.Errorf("signed out: status = %d, want 200", w.Code)
+	}
+}
+
+// Without the plugin, or with a page name nothing is registered under, the
+// request fails rather than guessing.
+func TestRequireGuest_Failures(t *testing.T) {
+	if w := request(guestSite(t, session.RequireGuest("/account"), false), http.MethodGet, "/login", nil); w.Code != http.StatusInternalServerError {
+		t.Errorf("without the plugin: status = %d, want 500", w.Code)
+	}
+	h := guestSite(t, session.RequireGuestPage("nope"), true)
+	if w := request(h, http.MethodGet, "/login", guestSignIn(t, h)); w.Code != http.StatusInternalServerError {
+		t.Errorf("unknown page, signed in: status = %d, want 500", w.Code)
+	}
+}

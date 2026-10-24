@@ -101,6 +101,33 @@ in the application: without it there is no session to read, and the guard fails 
 request with `ErrNoSession` rather than sending every reader to a login that could
 never let them in.
 
+## Pages for signed-out readers
+
+The pages to sign in, sign up or reset a password have no use for a reader who is
+already signed in. `RequireGuest` is the guard for them: a signed-out reader goes
+through, and a signed-in one gets `303 See Other` to the `next` the request
+carries — when `collage.SafeRedirect` finds it a path on this site — or to the
+home path otherwise.
+
+```go
+func Auth() *collage.Fragment {
+	return collage.NewFragment("auth", "layouts/auth.html").
+		WithGuard(session.RequireGuest("/account")).
+		Build()
+}
+```
+
+A reader `RequireUser` sent to `/login?next=%2Fdashboard`, who signed in in
+another tab meanwhile, so lands on `/dashboard`; `next=//evil.example` sends them
+to `/account`. `session.RequireGuestPage("account")` names the page instead of
+writing its path, in the request's locale, as `RequireUserPage` does; a name the
+application has not registered fails a signed-in reader's request. Both read
+`session.UserKey` and fail the request with `ErrNoSession` without the plugin.
+
+```go
+WithGuard(session.RequireGuestPage("account"))
+```
+
 ## The cache
 
 **A page rendered for a reader with a session may show that reader's data** — their

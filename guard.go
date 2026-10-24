@@ -68,6 +68,58 @@ func RequirePage(key, loginPage string) collage.GuardFunc {
 	})
 }
 
+// RequireGuest returns a guard for the pages only a signed-out reader has a
+// use for — sign in, sign up, a forgotten password: a signed-out reader goes
+// through, and a signed-in one is answered with 303 See Other to the "next" the
+// request carries when it is a path on this site (collage.SafeRedirect), or to
+// homePath otherwise:
+//
+//	auth := collage.NewFragment("auth", "layouts/auth.html").
+//		WithGuard(session.RequireGuest("/account")).
+//		Build()
+//
+// A reader RequireUser sent to the login page with a next, who has signed in
+// meanwhile in another tab, so lands where they were going. Like RequireUser it
+// reads UserKey, and fails the request with ErrNoSession without the plugin.
+func RequireGuest(homePath string) collage.GuardFunc {
+	return guest(func(context.Context) (string, error) { return homePath, nil })
+}
+
+// RequireGuestPage is RequireGuest with the page a signed-in reader is sent to
+// named rather than its path written, in the locale the request is in:
+//
+//	WithGuard(session.RequireGuestPage("account"))
+//
+// A name the application has not registered fails a signed-in reader's request.
+func RequireGuestPage(homePage string) collage.GuardFunc {
+	return guest(func(ctx context.Context) (string, error) {
+		return collage.URL(ctx, homePage, nil)
+	})
+}
+
+// guest is the guard RequireGuest and RequireGuestPage return: it lets through
+// a reader whose session holds nothing under UserKey, and sends anyone else to
+// next, or home.
+func guest(home func(context.Context) (string, error)) collage.GuardFunc {
+	return func(ctx context.Context, r *http.Request) (*collage.GuardDecision, error) {
+		s := FromContext(ctx)
+		if s == nil {
+			return nil, fmt.Errorf("session: guest guard: %w", ErrNoSession)
+		}
+		if s.Get(UserKey) == "" {
+			return nil, nil
+		}
+		location, err := home(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("session: guest guard: %w", err)
+		}
+		return &collage.GuardDecision{
+			Status:   http.StatusSeeOther,
+			Location: collage.SafeRedirect(r.URL.Query().Get("next"), location),
+		}, nil
+	}
+}
+
 // require is the guard Require and RequirePage return: it lets through a reader
 // whose session holds key, and sends anyone else to login plus "next".
 func require(key string, login func(context.Context) (string, error)) collage.GuardFunc {
