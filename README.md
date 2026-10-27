@@ -164,6 +164,32 @@ Signed only, the reader can read what the session holds and cannot change it. Wi
 `Encrypt`, they cannot read it either. The cookie's name is bound into the
 signature, so a value cannot be moved from one cookie to another.
 
+### Bound to its host
+
+The host a session was issued on — lower-cased, without its port — is inside the
+signed (and, with `Encrypt`, encrypted) payload, and a cookie presented on another
+host is no session there. On an application serving several sites from one
+process and one key — collage-tenant's tenants — a reader of `acme.test` who copies
+their cookie onto a request to `globex.test` is anonymous on globex, and
+`RequireUser` sends them to sign in. Such a cookie is ignored, not cleared.
+
+- **`domain` on one site:** the session is bound to the domain instead, so every
+  host under it (`www.example.com`, `shop.example.com`) shares it, which is what
+  setting `domain` asks for.
+- **`domain` with collage-tenant** (any plugin resolving hosts to origins): each
+  host is its own site, and the session stays bound to its host whatever the
+  domain. Do not set `domain` there: a cookie shared by all tenants is only
+  overwritten by each sign-in.
+- The host is the request's `Host`, as collage-tenant reads it. Behind a proxy that
+  rewrites `Host`, every session is bound to the rewritten one, which still works
+  and binds nothing: forward the original `Host`.
+
+**Cookies from before v0.7.0** carry no host. On a one-site application there is
+no other host to replay one on, so it is accepted and rewritten bound to the host
+it arrived on: the upgrade signs nobody out. On a multi-site application it
+cannot say which tenant issued it, so it is refused and cleared: every reader
+signs in again once after the upgrade.
+
 A browser keeps four kilobytes of a cookie and silently drops one past that — the
 reader is signed out for no visible reason. `Set` refuses a value that would take
 the cookie past 4096 bytes with an error wrapping `session.ErrTooLarge`
@@ -249,6 +275,15 @@ empty, a previous-keys variable that is not set (set but empty means none), a
 duration written as a number, a negative one or one under a second, an unknown
 `sameSite`, `none` without `secure`, and a cookie name a browser would refuse all
 stop the application from starting.
+
+## Changed in v0.7.0
+
+A session is bound to the host it was issued on (see
+[Bound to its host](#bound-to-its-host)): a cookie replayed on another host —
+another tenant's — is no longer a signed-in session there (audit PLUGA-02). No
+configuration changes. Cookies issued by v0.6.0 and earlier are kept and
+rewritten on a one-site application; with collage-tenant (or any plugin
+resolving hosts to origins) they are refused, and readers sign in again once.
 
 ## Changed in v0.3.0
 

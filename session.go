@@ -42,6 +42,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -109,7 +110,11 @@ type Options struct {
 	Cookie string `json:"cookie"`
 	// Path is the cookie's path. Default "/".
 	Path string `json:"path"`
-	// Domain is the cookie's domain. Default none: the host that set it.
+	// Domain is the cookie's domain. Default none: the host that set it. A
+	// session is bound to the host it was issued on; with a Domain, on an
+	// application that is one site, to the domain instead, so every host under it
+	// shares the session. With a plugin resolving hosts to origins
+	// (collage-tenant) it stays bound to the host.
 	Domain string `json:"domain"`
 	// MaxAge is how long a session lives from when it was started or
 	// regenerated, however active its reader: "168h". Default a week. Counted in
@@ -138,6 +143,11 @@ type Plugin struct {
 	sameSite http.SameSite
 	// maxAge and idle are MaxAge and IdleTimeout in whole seconds.
 	maxAge, idle int
+	// multiOrigin is whether a plugin resolves hosts to origins (collage-tenant):
+	// then each host is its own site, and a session never spans two.
+	multiOrigin bool
+	// domain is Domain, lower-cased, with no leading dot.
+	domain string
 }
 
 // keySet is one key and the two keys derived from it, so signing and encrypting
@@ -154,7 +164,7 @@ var _ collage.Plugin = (*Plugin)(nil)
 func New(opts Options) *Plugin { return &Plugin{opts: opts} }
 
 func (p *Plugin) Name() string                   { return Name }
-func (p *Plugin) Version() string                { return "0.6.0" }
+func (p *Plugin) Version() string                { return "0.7.0" }
 func (p *Plugin) Shutdown(context.Context) error { return nil }
 
 // Init reads the configuration, refuses what is wrong with it, and wraps every
@@ -166,6 +176,7 @@ func (p *Plugin) Init(_ context.Context, host collage.Host) error {
 	}
 	p.opts = opts
 	p.log = host.Logger()
+	p.multiOrigin = host.MultiOrigin()
 	if err := p.configure(host.DevMode()); err != nil {
 		return err
 	}
@@ -263,6 +274,7 @@ func (p *Plugin) configure(dev bool) error {
 	if o.Path == "" {
 		o.Path = "/"
 	}
+	p.domain = strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(o.Domain, "."), "."))
 	if o.MaxAge == 0 {
 		o.MaxAge = collage.Duration(7 * 24 * time.Hour)
 	}
@@ -310,12 +322,15 @@ func derive(key []byte) (keySet, error) {
 }
 
 // state is what the cookie carries. Created and Seen are inside the signature, so
-// a reader cannot extend a session by editing them.
+// a reader cannot extend a session by editing them; Host too, so a cookie issued
+// on one host cannot be presented on another. Host is nil in a cookie from
+// before v0.7.0.
 type state struct {
 	ID      string            `json:"i"`
 	Data    map[string]string `json:"d,omitempty"`
 	Created int64             `json:"c"`
 	Seen    int64             `json:"s"`
+	Host    *string           `json:"h,omitempty"`
 }
 
 // Session is one reader's session. It is safe for concurrent use: a page's data
@@ -404,6 +419,7 @@ func (s *Session) Set(key, value string) error {
 	// The size is known only once the value is encoded — encrypted, signed — so
 	// encode it, and refuse here, where the caller can still do something about it.
 	next.Seen = time.Now().Unix()
+	next.Host = s.plugin.scope(s.req)
 	if size := len(s.plugin.opts.Cookie) + 1 + len(s.plugin.encode(next)); size > maxCookieSize {
 		return fmt.Errorf("%w: setting %q would make it %d bytes, over %d", ErrTooLarge, key, size, maxCookieSize)
 	}
@@ -491,6 +507,22 @@ func (p *Plugin) load(r *http.Request) *Session {
 	if !ok || st.ID == "" || len(st.Data) == 0 {
 		return s
 	}
+	switch {
+	case st.Host == nil && p.multiOrigin:
+		// From before v0.7.0, on an application serving several sites: it
+		// cannot say which one issued it, so it is refused, and cleared.
+		return s
+	case st.Host == nil:
+		// From before v0.7.0, on an application that is one site: there is no
+		// other site to replay it on. Kept, and rewritten bound to this host.
+		s.stale = true
+	case *st.Host != *p.scope(r):
+		// Issued for another host — another tenant's, or a replay. Ignored, not
+		// cleared: under a shared Domain, clearing it would sign the reader out
+		// of the host that did issue it.
+		s.arrived = false
+		return s
+	}
 	now := time.Now().Unix()
 	if now-st.Created >= int64(p.maxAge) {
 		return s
@@ -530,6 +562,7 @@ func (w *sessionWriter) commit() {
 	switch {
 	case len(s.state.Data) > 0 && (s.changed || s.stale):
 		s.state.Seen = time.Now().Unix()
+		s.state.Host = p.scope(s.req)
 		value := p.encode(s.state)
 		if len(p.opts.Cookie)+1+len(value) > maxCookieSize {
 			// Set refuses what would not fit, so this is only the timestamps'
@@ -573,6 +606,29 @@ func (p *Plugin) remaining(st state) int {
 		left = p.idle
 	}
 	return max(left, 1)
+}
+
+// scope is what a session issued for r is bound to: r's host, lower-cased and
+// without its port — or, on a one-origin application with a Domain the host is
+// under, that domain with a leading dot, so every host the cookie is sent to
+// shares the session, as setting Domain asks. On a multi-origin application
+// each host is its own site, and the scope is always the host.
+func (p *Plugin) scope(r *http.Request) *string {
+	host := hostOf(r)
+	if d := p.domain; d != "" && !p.multiOrigin && (host == d || strings.HasSuffix(host, "."+d)) {
+		host = "." + d
+	}
+	return &host
+}
+
+// hostOf is r's host as collage-tenant reads it: no port, no brackets, no
+// trailing dot, lower case.
+func hostOf(r *http.Request) string {
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.ToLower(strings.TrimSuffix(strings.Trim(host, "[]"), "."))
 }
 
 func (p *Plugin) cookie(r *http.Request, value string, maxAge int) *http.Cookie {

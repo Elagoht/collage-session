@@ -14,7 +14,7 @@
       },
       "domain": {
         "type": "string",
-        "description": "Domain is the cookie's domain. Default none: the host that set it."
+        "description": "Domain is the cookie's domain. Default none: the host that set it. A session is bound to the host it was issued on; with a Domain, on an application that is one site, to the domain instead, so every host under it shares the session. With a plugin resolving hosts to origins (collage-tenant) it stays bound to the host."
       },
       "encrypt": {
         "type": "boolean",
